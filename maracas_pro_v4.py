@@ -250,7 +250,9 @@ class MaracasProV4:
         self.root.after(60, self._drain_log_queue)
 
     def enqueue_log(self, message): self._log_q.put(message)
-    def _ui(self, fn, *args, **kwargs): self.root.after(0, lambda: fn(*args, **kwargs))
+    def _ui(self, fn, *args, **kwargs): 
+        # Safely capture args/kwargs for thread-safe UI updates
+        self.root.after(0, lambda f=fn, a=args, k=kwargs: f(*a, **k))
 
     # ---------------------------- Config & Key ----------------------------
     def save_settings(self):
@@ -327,26 +329,36 @@ class MaracasProV4:
         return urljoin(base, endpoint)
 
     def test_omeka_connection(self):
+        """Start connection test in background thread."""
+        threading.Thread(target=self._test_omeka_connection_thread, daemon=True).start()
+    
+    def _test_omeka_connection_thread(self):
+        """Test connection in background thread to avoid freezing GUI."""
         url = self.get_api_url("site")
         self.enqueue_log(f"🔎 Testing: {url}")
         try:
             r = self.session.get(url, params={"key": self.omeka_api_key.get()}, timeout=10)
             if r.status_code == 200:
-                self.omeka_status.config(fg="#38a169", text="API Status: OK")
+                self._ui(self.omeka_status.config, fg="#38a169", text="API Status: OK")
                 self.enqueue_log("✅ Connection Successful.")
-                messagebox.showinfo("Success", "Connected to Omeka API!")
+                self.root.after(0, lambda: messagebox.showinfo("Success", "Connected to Omeka API!"))
             elif r.status_code == 403:
-                self.omeka_status.config(fg="#f59e0b", text="API Status: 403")
-                messagebox.showwarning("Auth Error", "API Key Invalid or insufficient permissions.")
+                self._ui(self.omeka_status.config, fg="#f59e0b", text="API Status: 403")
+                self.enqueue_log(f"❌ Error 403: Authentication failed")
+                self.root.after(0, lambda: messagebox.showwarning("Auth Error", "API Key Invalid or insufficient permissions."))
             else:
-                self.omeka_status.config(fg="#ef4444", text=f"Status: {r.status_code}")
+                self._ui(self.omeka_status.config, fg="#ef4444", text=f"Status: {r.status_code}")
                 self.enqueue_log(f"❌ Error {r.status_code}: {r.text}")
         except Exception as e:
             self.enqueue_log(f"❌ Network Error: {e}")
-            messagebox.showerror("Connection Error", str(e))
+            self.root.after(0, lambda: messagebox.showerror("Connection Error", str(e)))
 
     def fetch_element_ids(self):
-        """Dynamically fetch Dublin Core IDs from the API."""
+        """Start fetching element IDs in background thread."""
+        threading.Thread(target=self._fetch_element_ids_thread, daemon=True).start()
+    
+    def _fetch_element_ids_thread(self):
+        """Fetch element IDs in background thread to avoid freezing GUI."""
         url = self.get_api_url("elements")
         self.enqueue_log("🔄 Fetching Element IDs from API...")
         try:
@@ -389,7 +401,7 @@ class MaracasProV4:
             
             # Update our map
             self.dc_elements = mapping
-            self.mapping_status.config(text=f"✅ Mapped {len(mapping)} IDs", fg="#38a169")
+            self._ui(self.mapping_status.config, text=f"✅ Mapped {len(mapping)} IDs", fg="#38a169")
             self.enqueue_log(f"✅ Successfully mapped {len(mapping)} Dublin Core Element IDs.")
             
             # Verify critical ones exist
@@ -399,7 +411,7 @@ class MaracasProV4:
         except Exception as e:
             self.enqueue_log(f"❌ Failed to fetch elements: {e}")
             self.dc_elements = self.default_dc_map
-            self.mapping_status.config(text="⚠️ Using Fallback Defaults", fg="#f59e0b")
+            self._ui(self.mapping_status.config, text="⚠️ Using Fallback Defaults", fg="#f59e0b")
             self.enqueue_log("⚠️ Using default hardcoded IDs (Risk of mismatch!)")
 
     # ---------------------------- CSV & Processing ----------------------------
@@ -413,9 +425,18 @@ class MaracasProV4:
         else: os.system(f'xdg-open "{path}"')
 
     def export_log(self):
-        out = Path(self.output_dir_var.get()) / f"maracas_log_{int(time.time())}.txt"
-        out.write_text(self.upload_log.get("1.0", tk.END), encoding="utf-8")
-        self.enqueue_log(f"Log saved to {out}")
+        """Export log in background thread to avoid freezing for large logs."""
+        threading.Thread(target=self._export_log_thread, daemon=True).start()
+    
+    def _export_log_thread(self):
+        """Export log file in background thread."""
+        try:
+            log_content = self.upload_log.get("1.0", tk.END)
+            out = Path(self.output_dir_var.get()) / f"maracas_log_{int(time.time())}.txt"
+            out.write_text(log_content, encoding="utf-8")
+            self.enqueue_log(f"Log saved to {out}")
+        except Exception as e:
+            self.enqueue_log(f"❌ Error saving log: {e}")
 
     def browse_upload_file(self):
         path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv")])
