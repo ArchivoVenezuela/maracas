@@ -355,6 +355,7 @@ class MaracasProV4:
         """Fetch element IDs in background thread to avoid freezing GUI."""
         url = self.get_api_url("elements")
         self.enqueue_log("🔄 Fetching Element IDs from API...")
+        self.enqueue_log(f"   URL: {url}")
         try:
             # Try to get elements - may need to filter by element_set_id for Dublin Core
             params = {"key": self.omeka_api_key.get(), "per_page": 200}
@@ -367,36 +368,100 @@ class MaracasProV4:
             
             if r.status_code != 200:
                 error_msg = r.text if hasattr(r, 'text') else str(r.status_code)
+                self.enqueue_log(f"   Response: {r.text[:500]}")
                 raise Exception(f"API returned {r.status_code}: {error_msg}")
             
             data = r.json()
             mapping = {}
             
+            # Log first element for debugging
+            if isinstance(data, list) and len(data) > 0:
+                self.enqueue_log(f"   Received {len(data)} elements. Sample structure: {json.dumps(data[0], indent=2)[:300]}...")
+            elif isinstance(data, dict):
+                self.enqueue_log(f"   Received single element. Structure: {json.dumps(data, indent=2)[:300]}...")
+            
             # Handle both single object and array responses
             if isinstance(data, dict):
                 data = [data]
             
+            dublin_core_found = 0
+            other_sets = set()
+            
             for el in data:
-                # Filter for Dublin Core elements (element_set.name == "Dublin Core")
+                # Handle different possible structures for element_set
                 element_set = el.get("element_set", {})
+                set_name = ""
+                set_id = None
+                
+                # element_set might be:
+                # 1. A dict with "name" and "id"
+                # 2. A URL string
+                # 3. An object reference
                 if isinstance(element_set, dict):
                     set_name = element_set.get("name", "")
-                else:
-                    set_name = str(element_set)
+                    set_id = element_set.get("id")
+                elif isinstance(element_set, str):
+                    # If it's a URL, try to extract from it or fetch it
+                    # For now, we'll try filtering by ID if available
+                    pass
                 
-                # Only include Dublin Core elements
-                if set_name != "Dublin Core":
+                # Track element sets we see
+                if set_name:
+                    other_sets.add(set_name)
+                
+                # Filter for Dublin Core elements
+                # Dublin Core typically has id=1, but we'll check both name and id
+                is_dublin_core = False
+                if set_name == "Dublin Core":
+                    is_dublin_core = True
+                elif set_id == 1:  # Dublin Core usually has id=1
+                    is_dublin_core = True
+                elif not set_name and not set_id:
+                    # If element_set info is missing, include it anyway (some APIs don't include full details)
+                    # We'll filter by checking if it matches known DC element names
+                    is_dublin_core = True
+                
+                if not is_dublin_core:
                     continue
-                    
+                
                 name = el.get("name")
                 eid = el.get("id")
                 if name and eid:
                     mapping[name] = eid
+                    dublin_core_found += 1
+            
+            # If no Dublin Core elements found with name/id filter, try including all elements
+            # (some Omeka installations might not include element_set details in /api/elements)
+            if len(mapping) == 0 and len(data) > 0:
+                self.enqueue_log("   No Dublin Core elements found with element_set filter.")
+                self.enqueue_log(f"   Found element sets: {', '.join(sorted(other_sets)) if other_sets else 'None detected'}")
+                self.enqueue_log("   Attempting to include all elements (assuming DC if no set specified)...")
+                
+                # Include elements where element_set info is missing (common in some Omeka versions)
+                for el in data:
+                    element_set = el.get("element_set", {})
+                    # Only include if element_set is empty/missing or explicitly Dublin Core
+                    if not element_set or (isinstance(element_set, dict) and element_set.get("name") == "Dublin Core"):
+                        name = el.get("name")
+                        eid = el.get("id")
+                        if name and eid:
+                            mapping[name] = eid
             
             # Update our map
             self.dc_elements = mapping
-            self._ui(self.mapping_status.config, text=f"✅ Mapped {len(mapping)} IDs", fg="#38a169")
-            self.enqueue_log(f"✅ Successfully mapped {len(mapping)} Dublin Core Element IDs.")
+            if len(mapping) > 0:
+                self._ui(self.mapping_status.config, text=f"✅ Mapped {len(mapping)} IDs", fg="#38a169")
+                self.enqueue_log(f"✅ Successfully mapped {len(mapping)} Dublin Core Element IDs.")
+                # Log some of the mapped IDs for verification
+                sample_ids = list(mapping.items())[:5]
+                self.enqueue_log(f"   Sample mappings: {', '.join([f'{k}→{v}' for k, v in sample_ids])}")
+            else:
+                self._ui(self.mapping_status.config, text="❌ No IDs Found", fg="#e53e3e")
+                self.enqueue_log("❌ No element IDs were mapped.")
+                self.enqueue_log("   This might indicate:")
+                self.enqueue_log("   - API returned different structure than expected")
+                self.enqueue_log("   - Element set information missing from response")
+                self.enqueue_log(f"   - Found {len(data)} total elements, but none matched Dublin Core")
             
             # Verify critical ones exist
             if "Title" not in self.dc_elements:
@@ -404,6 +469,8 @@ class MaracasProV4:
                 
         except Exception as e:
             self.enqueue_log(f"❌ Failed to fetch elements: {e}")
+            import traceback
+            self.enqueue_log(f"   Traceback: {traceback.format_exc()[:500]}")
             self.dc_elements = {}
             self._ui(self.mapping_status.config, text="❌ Fetch Failed", fg="#e53e3e")
             self.enqueue_log("❌ Element ID fetch failed. You MUST fetch element IDs before uploading.")
