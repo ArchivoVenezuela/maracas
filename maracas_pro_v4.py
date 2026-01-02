@@ -350,15 +350,38 @@ class MaracasProV4:
         url = self.get_api_url("elements")
         self.enqueue_log("🔄 Fetching Element IDs from API...")
         try:
-            # We need to page through if there are many, but usually 50 gets DC
-            r = self.session.get(url, params={"key": self.omeka_api_key.get(), "per_page": 200})
+            # Try to get elements - may need to filter by element_set_id for Dublin Core
+            params = {"key": self.omeka_api_key.get(), "per_page": 200}
+            r = self.session.get(url, params=params, timeout=10)
+            
+            if r.status_code == 400:
+                # Try without per_page parameter, some Omeka versions don't support it
+                params = {"key": self.omeka_api_key.get()}
+                r = self.session.get(url, params=params, timeout=10)
+            
             if r.status_code != 200:
-                raise Exception(f"API returned {r.status_code}")
+                error_msg = r.text if hasattr(r, 'text') else str(r.status_code)
+                raise Exception(f"API returned {r.status_code}: {error_msg}")
             
             data = r.json()
             mapping = {}
+            
+            # Handle both single object and array responses
+            if isinstance(data, dict):
+                data = [data]
+            
             for el in data:
-                # We typically only care about 'Dublin Core' set, but mapping by name is usually safe enough unique
+                # Filter for Dublin Core elements (element_set.name == "Dublin Core")
+                element_set = el.get("element_set", {})
+                if isinstance(element_set, dict):
+                    set_name = element_set.get("name", "")
+                else:
+                    set_name = str(element_set)
+                
+                # Only include Dublin Core elements
+                if set_name != "Dublin Core":
+                    continue
+                    
                 name = el.get("name")
                 eid = el.get("id")
                 if name and eid:
@@ -367,7 +390,7 @@ class MaracasProV4:
             # Update our map
             self.dc_elements = mapping
             self.mapping_status.config(text=f"✅ Mapped {len(mapping)} IDs", fg="#38a169")
-            self.enqueue_log(f"✅ Successfully mapped {len(mapping)} Element IDs.")
+            self.enqueue_log(f"✅ Successfully mapped {len(mapping)} Dublin Core Element IDs.")
             
             # Verify critical ones exist
             if "Title" not in self.dc_elements:
@@ -504,6 +527,7 @@ class MaracasProV4:
             parts = re.split(r'[,;]', raw_tags)
             tags = [{"name": t.strip()} for t in parts if t.strip()]
 
+        # Build payload - ensure no 'id' field is included (Omeka rejects it for POST)
         payload = {
             "public": self.items_public.get(),
             "element_texts": element_texts,
@@ -513,6 +537,10 @@ class MaracasProV4:
         # Add file URLs only if present
         if file_urls:
             payload["file_urls"] = file_urls
+
+        # Ensure no 'id' key exists (Omeka API requirement for POST requests)
+        payload.pop("id", None)
+        payload.pop("ID", None)
 
         return payload
 
