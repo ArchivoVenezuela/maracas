@@ -551,6 +551,11 @@ class MaracasProV4:
             parts = re.split(r'[,;]', raw_tags)
             tags = [{"name": t.strip()} for t in parts if t.strip()]
 
+        # Warn if element_texts is empty (no metadata will be uploaded)
+        if len(element_texts) == 0:
+            self.enqueue_log("⚠️ WARNING: No metadata fields will be uploaded (element_texts is empty).")
+            self.enqueue_log("⚠️ Make sure you've fetched Element IDs in the Setup tab!")
+        
         # Build payload - ensure no 'id' field is included (Omeka rejects it for POST)
         payload = {
             "public": self.items_public.get(),
@@ -570,10 +575,25 @@ class MaracasProV4:
 
     # ---------------------------- Upload Loop ----------------------------
     def start_upload(self):
-        if not self.input_csv_file: return messagebox.showerror("Error", "Select CSV first")
-        if not self.dc_elements: 
-            messagebox.showwarning("Warning", "You haven't fetched Element IDs yet.\nUsing defaults (might fail).")
-            self.dc_elements = self.default_dc_map
+        if not self.input_csv_file: 
+            messagebox.showerror("Error", "Please select a CSV file first.")
+            return
+        
+        if not self.dc_elements or len(self.dc_elements) == 0:
+            result = messagebox.askyesno(
+                "Element IDs Not Fetched",
+                "You haven't fetched Element IDs yet.\n\n"
+                "This is REQUIRED for correct metadata mapping.\n\n"
+                "Would you like to:\n"
+                "- YES: Go to Setup tab and fetch Element IDs first (RECOMMENDED)\n"
+                "- NO: Continue with default IDs (may cause errors)"
+            )
+            if result:  # User clicked Yes - they want to fetch IDs first
+                self.notebook.select(0)  # Switch to Setup tab
+                return
+            else:  # User wants to continue anyway
+                self.dc_elements = self.default_dc_map
+                self.enqueue_log("⚠️ Using default element IDs - this may cause metadata errors!")
 
         self.cancel_requested = False
         self.upload_btn.config(state="disabled")
@@ -585,7 +605,26 @@ class MaracasProV4:
         self.enqueue_log("✋ Cancel requested...")
 
     def test_single_upload(self):
-        if not self.input_csv_file: return
+        if not self.input_csv_file:
+            messagebox.showerror("Error", "Please select a CSV file first.")
+            return
+        
+        if not self.dc_elements or len(self.dc_elements) == 0:
+            result = messagebox.askyesno(
+                "Element IDs Not Fetched",
+                "You haven't fetched Element IDs yet.\n\n"
+                "This is REQUIRED for correct metadata mapping.\n\n"
+                "Would you like to:\n"
+                "- YES: Go to Setup tab and fetch Element IDs first (RECOMMENDED)\n"
+                "- NO: Continue with default IDs (may cause errors)"
+            )
+            if result:  # User clicked Yes - they want to fetch IDs first
+                self.notebook.select(0)  # Switch to Setup tab
+                return
+            else:  # User wants to continue anyway
+                self.dc_elements = self.default_dc_map
+                self.enqueue_log("⚠️ Using default element IDs - this may cause metadata errors!")
+        
         threading.Thread(target=self._run_single_test, daemon=True).start()
 
     def _run_single_test(self):
