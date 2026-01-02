@@ -1,0 +1,3 @@
+Title,Creator,Subject,Description,Date,Publisher,Type,Format,Language,Identifier,Source,Rights,Tags,Files
+Test Book 1,John Author,Literature,This is a test description.,2024,Test Publisher,Text,Book,English,TEST001,Test Source,Public Domain,"test; book; example",https://example.com/file1.jpg
+Test Book 2,Jane Writer,History,A historical document about events.,2023,Another Publisher,Text,Document,English,TEST002,Another Source,Copyright,"history; document; archive",https://example.com/file2.pdf
