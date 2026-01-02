@@ -47,7 +47,7 @@ call venv\Scripts\activate.bat
 echo [INFO] Checking and installing dependencies...
 :: We install specifically what v4 needs. 
 :: 'pip install' skips automatically if already installed.
-pip install requests pandas keyring urllib3 tk >nul 2>&1
+pip install requests pandas keyring urllib3 >nul 2>&1
 
 :: 5. LAUNCH APPLICATION
 echo.

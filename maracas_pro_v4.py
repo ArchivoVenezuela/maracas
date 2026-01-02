@@ -431,14 +431,31 @@ class MaracasProV4:
 
         # Helper to get value from row, checking (EN)/(ES) variants
         def get_val(base_name):
-            # 1. Try Preference
-            if lang_pref == "english":
-                val = row.get(f"{base_name} (EN)") or row.get(f"{base_name} (ES)")
-            else:
-                val = row.get(f"{base_name} (ES)") or row.get(f"{base_name} (EN)")
+            # Helper to check if a value exists and is non-empty
+            def has_value(key):
+                val = row.get(key)
+                if val is None:
+                    return False
+                return bool(str(val).strip())
             
-            # 2. Try Naked Name
-            if not val: val = row.get(base_name)
+            val = None
+            
+            # 1. Try Preference first
+            if lang_pref == "english":
+                if has_value(f"{base_name} (EN)"):
+                    val = row.get(f"{base_name} (EN)")
+                elif has_value(f"{base_name} (ES)"):
+                    val = row.get(f"{base_name} (ES)")
+            else:  # spanish
+                if has_value(f"{base_name} (ES)"):
+                    val = row.get(f"{base_name} (ES)")
+                elif has_value(f"{base_name} (EN)"):
+                    val = row.get(f"{base_name} (EN)")
+            
+            # 2. Try Naked Name if no bilingual version found
+            if not val and has_value(base_name):
+                val = row.get(base_name)
+            
             return str(val).strip() if val else ""
 
         # Map standard DC fields
