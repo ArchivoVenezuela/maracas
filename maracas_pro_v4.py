@@ -516,7 +516,10 @@ class MaracasProV4:
             if not text: continue
             
             el_id = self.get_element_id(field)
-            if not el_id: continue
+            if not el_id:
+                # Log warning if element ID not found but text exists
+                self.enqueue_log(f"⚠️ Warning: No element ID found for '{field}', skipping...")
+                continue
 
             # HTML Check
             is_html = False
