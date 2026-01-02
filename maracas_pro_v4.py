@@ -77,15 +77,9 @@ class MaracasProV4:
         # Language preference for strict CSVs
         self.target_lang_pref = tk.StringVar(value="english") # 'spanish' or 'english'
 
-        # DC element IDs - Initially empty, fetched dynamically
-        self.dc_elements = {} 
-        # Fallback default map (Standard Omeka Classic) - only used if fetch fails
-        self.default_dc_map = {
-            "Identifier": 43, "Title": 50, "Creator": 39, "Contributor": 37,
-            "Subject": 49, "Type": 51, "Description": 41, "Date": 40,
-            "Language": 44, "Format": 42, "Rights": 47, "Publisher": 45,
-            "Relation": 46, "Source": 48, "Coverage": 38
-        }
+        # DC element IDs - Initially empty, fetched dynamically from API
+        # NO HARDCODED IDs - must be fetched from /api/elements
+        self.dc_elements = {}
 
     def create_session(self):
         s = requests.Session()
@@ -410,9 +404,11 @@ class MaracasProV4:
                 
         except Exception as e:
             self.enqueue_log(f"❌ Failed to fetch elements: {e}")
-            self.dc_elements = self.default_dc_map
-            self._ui(self.mapping_status.config, text="⚠️ Using Fallback Defaults", fg="#f59e0b")
-            self.enqueue_log("⚠️ Using default hardcoded IDs (Risk of mismatch!)")
+            self.dc_elements = {}
+            self._ui(self.mapping_status.config, text="❌ Fetch Failed", fg="#e53e3e")
+            self.enqueue_log("❌ Element ID fetch failed. You MUST fetch element IDs before uploading.")
+            self.enqueue_log(f"   Error details: {str(e)}")
+            self.enqueue_log("   Please check your API URL and key, then try again.")
 
     # ---------------------------- CSV & Processing ----------------------------
     def browse_output_directory(self):
@@ -556,20 +552,24 @@ class MaracasProV4:
             self.enqueue_log("⚠️ WARNING: No metadata fields will be uploaded (element_texts is empty).")
             self.enqueue_log("⚠️ Make sure you've fetched Element IDs in the Setup tab!")
         
-        # Build payload - ensure no 'id' field is included (Omeka rejects it for POST)
+        # Build payload according to Omeka Classic API specification
+        # CRITICAL: Never include "id" field in POST requests
         payload = {
             "public": self.items_public.get(),
             "element_texts": element_texts,
             "tags": tags
         }
         
-        # Add file URLs only if present
+        # Add file URLs only if present (Omeka Classic supports file_urls)
         if file_urls:
             payload["file_urls"] = file_urls
 
-        # Ensure no 'id' key exists (Omeka API requirement for POST requests)
-        payload.pop("id", None)
-        payload.pop("ID", None)
+        # Double-check: Remove any "id" fields (Omeka API requirement)
+        # Omeka Classic will reject POST requests with "id" field
+        if "id" in payload:
+            del payload["id"]
+        if "ID" in payload:
+            del payload["ID"]
 
         return payload
 
@@ -580,20 +580,16 @@ class MaracasProV4:
             return
         
         if not self.dc_elements or len(self.dc_elements) == 0:
-            result = messagebox.askyesno(
-                "Element IDs Not Fetched",
-                "You haven't fetched Element IDs yet.\n\n"
-                "This is REQUIRED for correct metadata mapping.\n\n"
-                "Would you like to:\n"
-                "- YES: Go to Setup tab and fetch Element IDs first (RECOMMENDED)\n"
-                "- NO: Continue with default IDs (may cause errors)"
+            messagebox.showerror(
+                "Element IDs Required",
+                "You MUST fetch Element IDs before uploading!\n\n"
+                "Please go to the Setup tab and click:\n"
+                "'2. Fetch Element IDs (Required)'\n\n"
+                "Element IDs are specific to your Omeka installation\n"
+                "and cannot be hardcoded."
             )
-            if result:  # User clicked Yes - they want to fetch IDs first
-                self.notebook.select(0)  # Switch to Setup tab
-                return
-            else:  # User wants to continue anyway
-                self.dc_elements = self.default_dc_map
-                self.enqueue_log("⚠️ Using default element IDs - this may cause metadata errors!")
+            self.notebook.select(0)  # Switch to Setup tab
+            return
 
         self.cancel_requested = False
         self.upload_btn.config(state="disabled")
@@ -610,20 +606,16 @@ class MaracasProV4:
             return
         
         if not self.dc_elements or len(self.dc_elements) == 0:
-            result = messagebox.askyesno(
-                "Element IDs Not Fetched",
-                "You haven't fetched Element IDs yet.\n\n"
-                "This is REQUIRED for correct metadata mapping.\n\n"
-                "Would you like to:\n"
-                "- YES: Go to Setup tab and fetch Element IDs first (RECOMMENDED)\n"
-                "- NO: Continue with default IDs (may cause errors)"
+            messagebox.showerror(
+                "Element IDs Required",
+                "You MUST fetch Element IDs before testing!\n\n"
+                "Please go to the Setup tab and click:\n"
+                "'2. Fetch Element IDs (Required)'\n\n"
+                "Element IDs are specific to your Omeka installation\n"
+                "and cannot be hardcoded."
             )
-            if result:  # User clicked Yes - they want to fetch IDs first
-                self.notebook.select(0)  # Switch to Setup tab
-                return
-            else:  # User wants to continue anyway
-                self.dc_elements = self.default_dc_map
-                self.enqueue_log("⚠️ Using default element IDs - this may cause metadata errors!")
+            self.notebook.select(0)  # Switch to Setup tab
+            return
         
         threading.Thread(target=self._run_single_test, daemon=True).start()
 
@@ -636,21 +628,40 @@ class MaracasProV4:
             self.enqueue_log("🧪 Testing first row payload construction...")
             payload = self.prepare_item_payload(row)
             
-            self.enqueue_log(f"📦 JSON Payload (Partial): {str(payload)[:300]}...")
+            # Log full payload for debugging (excluding sensitive data)
+            payload_str = json.dumps(payload, indent=2, ensure_ascii=False)
+            self.enqueue_log(f"📦 JSON Payload:\n{payload_str}")
             
             if self.dry_run.get():
-                self.enqueue_log("✅ Dry Run: Payload looks good.")
+                self.enqueue_log("✅ Dry Run: Payload construction complete (not sending to API).")
                 return
 
-            self.enqueue_log("🚀 Sending POST...")
+            # CRITICAL: POST to /api/items (NOT /api/items/site or /api/items/{id})
             url = self.get_api_url("items")
-            r = self.session.post(url, json=payload, params={"key": self.omeka_api_key.get()})
+            self.enqueue_log(f"🚀 POST endpoint: {url}")
+            self.enqueue_log(f"📤 Sending POST request to create item...")
+            
+            r = self.session.post(
+                url, 
+                json=payload, 
+                params={"key": self.omeka_api_key.get()},
+                timeout=30
+            )
+            
+            # Log response
+            self.enqueue_log(f"📥 Response Status: {r.status_code}")
+            self.enqueue_log(f"📥 Response Body: {r.text[:500]}")
             
             if r.status_code == 201:
-                new_id = r.json().get("id")
-                self.enqueue_log(f"✅ SUCCESS! Created Item ID: {new_id}")
+                try:
+                    response_data = r.json()
+                    new_id = response_data.get("id")
+                    self.enqueue_log(f"✅ SUCCESS! Created Item ID: {new_id}")
+                except Exception as e:
+                    self.enqueue_log(f"✅ SUCCESS! (Status 201) - Response parse error: {e}")
             else:
-                self.enqueue_log(f"❌ Failed: {r.status_code} - {r.text}")
+                self.enqueue_log(f"❌ Failed: HTTP {r.status_code}")
+                self.enqueue_log(f"   Response: {r.text}")
 
         except Exception as e:
             self.enqueue_log(f"❌ Error: {e}")
@@ -668,9 +679,11 @@ class MaracasProV4:
             self._ui(self.upload_progress.configure, value=0)
 
             delay = self.req_delay_ms.get() / 1000.0
+            # CRITICAL: POST to /api/items (NOT /api/items/site or /api/items/{id})
             url = self.get_api_url("items")
             
             self.enqueue_log(f"🚀 Starting Batch: {total} items")
+            self.enqueue_log(f"📍 POST endpoint: {url}")
 
             for i, row in enumerate(data):
                 if self.cancel_requested: break
@@ -679,20 +692,31 @@ class MaracasProV4:
                 
                 if not self.dry_run.get():
                     try:
-                        r = self.session.post(url, json=payload, params={"key": self.omeka_api_key.get()})
+                        r = self.session.post(
+                            url, 
+                            json=payload, 
+                            params={"key": self.omeka_api_key.get()},
+                            timeout=30
+                        )
+                        
                         if r.status_code == 201:
                             self.stats["upload_success"] += 1
-                            item_id = r.json().get("id")
-                            self.enqueue_log(f"✅ Item {i+1}: Created (ID {item_id})")
+                            try:
+                                response_data = r.json()
+                                item_id = response_data.get("id")
+                                self.enqueue_log(f"✅ Item {i+1}/{total}: Created (ID {item_id})")
+                            except Exception:
+                                self.enqueue_log(f"✅ Item {i+1}/{total}: Created (Status 201)")
                         else:
                             self.stats["upload_failed"] += 1
-                            self.enqueue_log(f"❌ Item {i+1}: Failed ({r.status_code})")
+                            self.enqueue_log(f"❌ Item {i+1}/{total}: Failed (HTTP {r.status_code})")
+                            self.enqueue_log(f"   Response: {r.text[:200]}")
                     except Exception as e:
                         self.stats["upload_failed"] += 1
-                        self.enqueue_log(f"❌ Item {i+1}: Exception {e}")
+                        self.enqueue_log(f"❌ Item {i+1}/{total}: Exception - {str(e)}")
                 else:
                     self.stats["upload_success"] += 1
-                    self.enqueue_log(f"✅ Item {i+1}: Dry run OK")
+                    self.enqueue_log(f"✅ Item {i+1}/{total}: Dry run OK")
 
                 # UI Update
                 self._ui(self.upload_success_label.config, text=f"Success: {self.stats['upload_success']}")
